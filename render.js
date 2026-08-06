@@ -9,11 +9,10 @@ const FONT_FAMILIES = {
 };
 
 async function loadFonts() {
-  // 使用开源免费的思源黑体(特黑/中黑/细黑 对应 Heavy/Medium/Light)
   const defs = [
-    ["PosterHeavy", "fonts/SourceHanSansCN-Heavy.otf"],
-    ["PosterMedium", "fonts/SourceHanSansCN-Medium.otf"],
-    ["PosterLight", "fonts/SourceHanSansCN-Light.otf"],
+    ["PosterHeavy", "fonts/SourceHanSansCN-Heavy-subset.woff2"],
+    ["PosterMedium", "fonts/SourceHanSansCN-Medium-subset.woff2"],
+    ["PosterLight", "fonts/SourceHanSansCN-Light-subset.woff2"],
   ];
   await Promise.all(
     defs.map(async ([name, url]) => {
@@ -23,7 +22,6 @@ async function loadFonts() {
     })
   );
 }
-
 /* ================= 版面常量 ================= */
 // 成交照片区域 [x0,y0,x1,y1]
 const DEAL_RECT = [1239, 658, 2342, 1318];
