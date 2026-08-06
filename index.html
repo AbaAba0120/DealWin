@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>成交喜报海报生成器</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f3f4f6;
+    color: #222;
+  }
+  header {
+    background: #c70203;
+    color: #fff;
+    padding: 12px 24px;
+    font-size: 18px;
+    font-weight: 600;
+  }
+  main {
+    display: flex;
+    gap: 20px;
+    padding: 20px 24px;
+    align-items: flex-start;
+  }
+  #panel {
+    width: 440px;
+    flex: none;
+    position: relative;
+    z-index: 2;
+    background: #f3f4f6;
+  }
+  fieldset {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+    margin-bottom: 14px;
+    padding: 10px 14px 14px;
+    min-width: 0;
+  }
+  legend { font-weight: 600; color: #c70203; padding: 0 6px; }
+  .field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+  }
+  .field > span {
+    flex: none;
+    width: 150px;
+    font-size: 13px;
+    color: #555;
+    text-align: right;
+  }
+  .field em { font-style: normal; font-size: 13px; color: #555; }
+  .field input.mini {
+    width: 72px;
+    padding: 6px 4px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 13px;
+  }
+  .field input.wide {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 13px;
+  }
+  .field input.readonly { background: #f5f5f5; color: #c70203; font-weight: 600; }
+  .hint-inline { color: #999 !important; font-size: 12px !important; }
+  .field input[type="text"]:focus, .field input.mini:focus { border-color: #c70203; outline: none; }
+  .field select {
+    flex: 1;
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 13px;
+  }
+  .date-field input {
+    width: 64px;
+    padding: 6px 4px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 13px;
+  }
+  .date-field input:first-of-type { width: 84px; }
+  .date-field em { font-style: normal; font-size: 13px; color: #555; margin-right: 4px; }
+  .hint { font-size: 12px; color: #999; margin: 6px 0 0; }
+  .palette { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .palette img {
+    width: 44px;
+    height: 44px;
+    object-fit: contain;
+    cursor: pointer;
+    border: 1px solid #eee;
+    border-radius: 6px;
+    padding: 2px;
+    background: #fafafa;
+  }
+  .palette img:hover { border-color: #c70203; }
+  #actions { display: flex; gap: 10px; margin-bottom: 20px; }
+  button {
+    flex: 1;
+    padding: 12px;
+    font-size: 15px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  #download { background: #c70203; color: #fff; font-weight: 600; }
+  #reset { background: #eee; color: #333; }
+  #preview { flex: 1; min-width: 0; position: sticky; top: 20px; z-index: 1; }
+  #stage { position: relative; width: 100%; }
+  #poster {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: #fff;
+    box-shadow: 0 2px 12px rgba(0,0,0,.15);
+    border-radius: 4px;
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    border-radius: 4px;
+  }
+  #overlayInner {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
+  }
+  .tile {
+    position: absolute;
+    background-size: cover;
+    background-position: center;
+  }
+  .tile.placeholder {
+    border: 6px dashed #bbb;
+    background: rgba(0,0,0,.04);
+    color: #999;
+    font-size: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    white-space: pre-line;
+  }
+  .module-tile { cursor: move; }
+  .sticker { position: absolute; cursor: move; touch-action: none; }
+  .sticker img { width: 100%; height: 100%; pointer-events: none; }
+  .selected { outline: 5px dashed #2196f3; outline-offset: 2px; }
+  .ctl { display: none; }
+  .selected .ctl { display: block; }
+  .del {
+    position: absolute;
+    top: -50px;
+    right: -50px;
+    width: 100px;
+    height: 100px;
+    border-radius: 50%;
+    background: #e53935;
+    color: #fff;
+    font-size: 64px;
+    line-height: 1;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  .resize {
+    position: absolute;
+    right: -45px;
+    bottom: -45px;
+    width: 110px;
+    height: 110px;
+    background: #2196f3;
+    border-radius: 12px;
+    cursor: nwse-resize;
+  }
+  .resize::after {
+    content: "";
+    position: absolute;
+    right: 18px;
+    bottom: 18px;
+    width: 40px;
+    height: 40px;
+    border-right: 10px solid #fff;
+    border-bottom: 10px solid #fff;
+  }
+  #status { color: #c0392b; padding: 4px 0; font-size: 13px; }
+  @media (max-width: 1100px) {
+    main { flex-direction: column; }
+    #panel { width: 100%; }
+    #preview { position: static; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>成交喜报海报生成器 · 马总侃房团队</header>
+<main>
+  <div id="panel">
+    <div id="status"></div>
+    <div id="actions">
+      <button id="download">下载高清 PNG(2480×3508)</button>
+      <button id="reset">恢复默认内容</button>
+    </div>
+    <div id="form"></div>
+  </div>
+  <div id="preview">
+    <div id="stage">
+      <canvas id="poster"></canvas>
+      <div id="overlay"><div id="overlayInner"></div></div>
+    </div>
+  </div>
+</main>
+<script src="layout.js"></script>
+<script src="assets.js"></script>
+<script src="render.js"></script>
+</body>
+</html>
