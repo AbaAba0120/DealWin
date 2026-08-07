@@ -95,7 +95,7 @@ const DEAL_IDS = {
   rating: "对比信息/组 6/小区评级：C",
 };
 const ROW_LABELS = [
-  "挂牌价", "挂牌时长", "推广门店量", "影响经纪人数量", "短视频邀约拍摄量",
+  "挂牌时长", "推广门店量", "影响经纪人数量", "短视频邀约拍摄量",
   "曝光量", "带看量", "出价量", "谈判量", "是否成交",
 ];
 
@@ -111,8 +111,15 @@ function splitPrefix(text) {
 const state = {
   values: {},        // 文字图层 id -> 最终绘制文本
   dealPhoto: null,   // ImageBitmap
-  stickers: [],      // {img, x, y, w, h, el}
+  stickers: [],      // {img, x, y, w, h, angle, el}
   modules: MODULE_RECTS.map(() => ({ photos: [], preset: "auto" })),
+  mosaic: {
+    enabled: false,
+    brushSize: 80,   // 画布像素
+    strokes: [],     // [{points: [[x,y],...], size}]
+    maskCanvas: null,
+    maskCtx: null,
+  },
 };
 let layout, bgImg;
 let scaleFactor = 1;
@@ -203,6 +210,43 @@ function redraw() {
 }
 
 /* 导出完整海报 */
+function applyMosaic(ctx, canvas) {
+  if (!state.mosaic.maskCanvas || !state.mosaic.strokes.length) return;
+  const w = canvas.width, h = canvas.height;
+  const mask = state.mosaic.maskCanvas;
+
+  // 1. 复制当前 canvas 内容（背景+照片）到临时 canvas
+  const tmp = document.createElement("canvas");
+  tmp.width = w;
+  tmp.height = h;
+  const tctx = tmp.getContext("2d");
+  tctx.drawImage(canvas, 0, 0);
+
+  // 2. 像素化：缩小再放大，关闭平滑
+  const pixelSize = 16;
+  const small = document.createElement("canvas");
+  small.width = Math.ceil(w / pixelSize);
+  small.height = Math.ceil(h / pixelSize);
+  const sctx = small.getContext("2d");
+  sctx.imageSmoothingEnabled = false;
+  sctx.drawImage(tmp, 0, 0, small.width, small.height);
+  tctx.imageSmoothingEnabled = false;
+  tctx.clearRect(0, 0, w, h);
+  tctx.drawImage(small, 0, 0, w, h);
+
+  // 3. 用 mask 做遮罩，只保留涂抹区域
+  const masked = document.createElement("canvas");
+  masked.width = w;
+  masked.height = h;
+  const mctx = masked.getContext("2d");
+  mctx.drawImage(tmp, 0, 0);
+  mctx.globalCompositeOperation = "destination-in";
+  mctx.drawImage(mask, 0, 0);
+
+  // 4. 画回主 canvas
+  ctx.drawImage(masked, 0, 0);
+}
+
 function composePoster() {
   const canvas = document.createElement("canvas");
   canvas.width = layout.width;
@@ -212,13 +256,18 @@ function composePoster() {
   if (state.dealPhoto) {
     drawCover(ctx, state.dealPhoto, ...rectToXYWH(DEAL_RECT));
   }
-  for (const s of state.stickers) {
-    ctx.drawImage(s.img, s.x, s.y, s.w, s.h);
-  }
   for (const mod of state.modules) {
     for (const p of mod.photos) {
       drawCover(ctx, p.img, p.x, p.y, p.w, p.h);
     }
+  }
+  applyMosaic(ctx, canvas);
+  for (const s of state.stickers) {
+    ctx.save();
+    ctx.translate(s.x + s.w / 2, s.y + s.h / 2);
+    if (s.angle) ctx.rotate((s.angle * Math.PI) / 180);
+    ctx.drawImage(s.img, -s.w / 2, -s.h / 2, s.w, s.h);
+    ctx.restore();
   }
   drawTexts(ctx);
   return canvas;
@@ -298,6 +347,32 @@ function makeInteractive(el, obj, opts) {
       handle.addEventListener("pointerup", up);
     });
   }
+  // 左下角旋转
+  const rotHandle = el.querySelector(".rotate");
+  if (rotHandle) {
+    rotHandle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      rotHandle.setPointerCapture(e.pointerId);
+      const rect = overlayInner.getBoundingClientRect();
+      const cxScreen = rect.left + (obj.x + obj.w / 2) * scaleFactor;
+      const cyScreen = rect.top + (obj.y + obj.h / 2) * scaleFactor;
+      const startAngle = Math.atan2(e.clientY - cyScreen, e.clientX - cxScreen);
+      const startObjAngle = obj.angle || 0;
+      const move = (ev) => {
+        const curAngle = Math.atan2(ev.clientY - cyScreen, ev.clientX - cxScreen);
+        let delta = (curAngle - startAngle) * 180 / Math.PI;
+        obj.angle = (startObjAngle + delta) % 360;
+        positionEl(el, obj);
+      };
+      const up = () => {
+        rotHandle.removeEventListener("pointermove", move);
+        rotHandle.removeEventListener("pointerup", up);
+      };
+      rotHandle.addEventListener("pointermove", move);
+      rotHandle.addEventListener("pointerup", up);
+    });
+  }
 }
 
 function positionEl(el, obj) {
@@ -305,6 +380,9 @@ function positionEl(el, obj) {
   el.style.top = obj.y + "px";
   el.style.width = obj.w + "px";
   el.style.height = obj.h + "px";
+  if (obj.angle !== undefined) {
+    el.style.transform = `rotate(${obj.angle}deg)`;
+  }
 }
 
 function selectEl(el) {
@@ -325,13 +403,16 @@ function addControls(el, onDelete, keepRatio) {
     const rs = document.createElement("div");
     rs.className = "ctl resize";
     el.appendChild(rs);
+    const rot = document.createElement("div");
+    rot.className = "ctl rotate";
+    el.appendChild(rot);
   }
 }
 
 /* ---------- 贴纸 ---------- */
 async function addSticker(img, x, y, w) {
   const h = (w * img.naturalHeight || img.height) / (img.naturalWidth || img.width);
-  const s = { img, x, y, w, h };
+  const s = { img, x, y, w, h, angle: 0 };
   state.stickers.push(s);
   const el = document.createElement("div");
   el.className = "sticker";
@@ -443,11 +524,11 @@ const FW_ROWS = [ // 房屋信息;null 表示装修行(折价联动,单独处理
   { tpl: "{}（套）", def: ["10"] },
 ];
 const WT_TPLS = [ // 委托前/后共用模板;null 表示是否成交(下拉)
-  "{}（万）", "{}（天）", "{}（家）", "{}（人）", "{}（人）",
+  "{}（天）", "{}（家）", "{}（人）", "{}（人）",
   "{}万（人次）", "{}（组）", "{}（组）", "{}（次）", null,
 ];
-const WT_BEFORE = ["799", "142", "3", "40", "1", "2", "1", "0", "0", "否"];
-const WT_AFTER = ["888", "11", "40", "130", "6", "6.5", "4", "1", "1", "是"];
+const WT_BEFORE = ["142", "3", "40", "1", "2", "1", "0", "0", "否"];
+const WT_AFTER = ["11", "40", "130", "6", "6.5", "4", "1", "1", "是"];
 
 function buildForm() {
   const form = document.getElementById("form");
@@ -617,39 +698,7 @@ function buildForm() {
     addTextField(fs1, DEAL_IDS.rating, "小区评级", prefix, val);
   }
 
-  // 委托-后挂牌价上浮比例:0-10 对应 100%-110%,默认 10(即 110%)
-  let ratioInp, ratioWarn;
-  let wtAfterList = null, wtAfterAgents = null, wtAfterExposure = null, wtAfterShopInp = null;
-  {
-    const row = makeRow(fs1, "挂牌价上浮");
-    ratioInp = document.createElement("input");
-    ratioInp.type = "number";
-    ratioInp.className = "mini";
-    ratioInp.min = 0;
-    ratioInp.max = 10;
-    ratioInp.value = "10";
-    ratioInp.dataset.default = "10";
-    row.appendChild(ratioInp);
-    row.appendChild(makeEm("(0=100%,10=110%)"));
-    ratioWarn = makeEm("请输入 0-10 之间的数");
-    ratioWarn.className = "warn";
-    ratioWarn.style.display = "none";
-    row.appendChild(ratioWarn);
-  }
-  const updateListPrice = () => {
-    if (!wtAfterList) return;
-    const v = parseFloat(ratioInp.value);
-    const bad = isNaN(v) || v < 0 || v > 10;
-    ratioWarn.style.display = bad ? "" : "none";
-    ratioInp.classList.toggle("invalid", bad);
-    if (bad) return;
-    const price = parseFloat(priceInp.value);
-    const lp = isNaN(price) ? "" : String(Math.round(price * (1 + v / 100)));
-    wtAfterList.inp.value = lp;
-    setValue(wtAfterList.id, lp ? lp + "（万）" : wtAfterList.defText);
-  };
-  priceInp.addEventListener("input", updateListPrice);
-  ratioInp.addEventListener("input", updateListPrice);
+  let wtAfterAgents = null, wtAfterExposure = null, wtAfterShopInp = null;
 
   /* --- 分区按模板生成(行数与 PSD 图层一一对应,对不上则退化为整值输入) --- */
   const groupTexts = (g) =>
@@ -743,28 +792,18 @@ function buildForm() {
     }
   };
 
-  // 隐藏"房屋销售数据"的"挂牌价"标签
-  const salesDataTexts = groupTexts("组 7 拷贝 2");
-  if (salesDataTexts[0]) {
-    setValueSilent(salesDataTexts[0].id, "");
-  }
-
   ["组 7 拷贝 3", "组 7 拷贝 4"].forEach((g, gi) => {
     const fs = newSection(gi === 0 ? "销售数据 · 委托-前(只填数值)" : "销售数据 · 委托-后(只填数值)");
     const defs = gi === 0 ? WT_BEFORE : WT_AFTER;
     groupTexts(g).forEach((t, i) => {
-      if (i === 0) {
-        setValueSilent(t.id, ""); // 删除挂牌价
-        return;
-      }
       const label = ROW_LABELS[i] || "";
       const tpl = WT_TPLS[i];
-      if (gi === 1 && i === 2) {
+      if (gi === 1 && i === 1) {
         // 委托-后 推广门店量
         const inputs = addTemplateField(fs, t.id, label, "", tpl, [defs[i]]);
         wtAfterShopInp = inputs[0];
         wtAfterShopInp.addEventListener("input", updateWtAfterDerived);
-      } else if (gi === 1 && i === 3) {
+      } else if (gi === 1 && i === 2) {
         // 委托-后 影响经纪人数量 - 只读
         const row = makeRow(fs, label);
         const inp = makeInput("", "mini");
@@ -773,7 +812,7 @@ function buildForm() {
         row.appendChild(inp);
         row.appendChild(makeEm("（人）"));
         wtAfterAgents = { inp, id: t.id };
-      } else if (gi === 1 && i === 5) {
+      } else if (gi === 1 && i === 4) {
         // 委托-后 曝光量 - 只读
         const row = makeRow(fs, label);
         const inp = makeInput("", "mini");
@@ -808,36 +847,9 @@ function buildForm() {
     fsDeal.appendChild(inp);
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "上传后,从下方贴纸库点选贴纸拖到人脸位置,可拖动、右下角缩放。";
+    hint.textContent = "上传后照片自动填入海报右上区域。";
     fsDeal.appendChild(hint);
-
-    const pal = document.createElement("div");
-    pal.className = "palette";
-    STICKERS.forEach((s) => {
-      const im = document.createElement("img");
-      im.src = s.data;
-      im.title = "点击添加贴纸";
-      im.addEventListener("click", () => {
-        const [x0, y0, x1, y1] = DEAL_RECT;
-        addSticker(im, (x0 + x1) / 2 - 100, (y0 + y1) / 2 - 100, 200);
-      });
-      pal.appendChild(im);
-    });
-    // 常用 emoji 也做成贴纸
-    ["😂", "🥰", "😎", "🤩"].forEach((ch) => {
-      const url = emojiToDataURL(ch);
-      const im = document.createElement("img");
-      im.src = url;
-      im.title = "点击添加 emoji";
-      im.addEventListener("click", () => {
-        const [x0, y0, x1, y1] = DEAL_RECT;
-        addSticker(im, (x0 + x1) / 2 - 100, (y0 + y1) / 2 - 100, 200);
-      });
-      pal.appendChild(im);
-    });
-    fsDeal.appendChild(pal);
   }
-
   /* --- 项目照片模块 --- */
   MODULE_NAMES.forEach((name, mi) => {
     const fs = newSection(`项目照片 · ${name}`);
@@ -875,9 +887,110 @@ function buildForm() {
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = "可一次选多张;照片格可直接拖动位置、右下角缩放微调。";
-    fs.appendChild(hint);
   });
+
+  /* --- 贴纸·马赛克（所有照片通用） --- */
+  const fsSticker = newSection("贴纸·马赛克（所有照片通用）");
+  {
+    // 内置贴纸
+    const pal = document.createElement("div");
+    pal.className = "palette";
+    STICKERS.forEach((s) => {
+      const im = document.createElement("img");
+      im.src = s.data;
+      im.title = "点击添加贴纸";
+      im.addEventListener("click", () => {
+        const w = 200;
+        addSticker(im, layout.width / 2 - w / 2, layout.height / 2 - w / 2, w);
+      });
+      pal.appendChild(im);
+    });
+    // 常用 emoji
+    ["😂", "🥰", "😎", "🤩"].forEach((ch) => {
+      const url = emojiToDataURL(ch);
+      const im = document.createElement("img");
+      im.src = url;
+      im.title = "点击添加 emoji";
+      im.addEventListener("click", () => {
+        const w = 200;
+        addSticker(im, layout.width / 2 - w / 2, layout.height / 2 - w / 2, w);
+      });
+      pal.appendChild(im);
+    });
+    fsSticker.appendChild(pal);
+
+    // 上传自定义贴纸
+    const upHint = document.createElement("p");
+    upHint.className = "hint";
+    upHint.textContent = "上传自定义贴纸（可多选），上传后自动添加到画布中央并加入上方贴纸库。";
+    fsSticker.appendChild(upHint);
+    const upInp = document.createElement("input");
+    upInp.type = "file";
+    upInp.accept = "image/*";
+    upInp.multiple = true;
+    upInp.addEventListener("change", async () => {
+      for (const f of upInp.files) {
+        const url = URL.createObjectURL(f);
+        const img = await loadImage(url);
+        const thumb = document.createElement("img");
+        thumb.src = url;
+        thumb.title = "自定义贴纸";
+        thumb.addEventListener("click", () => {
+          const w = 200;
+          addSticker(img, layout.width / 2 - w / 2, layout.height / 2 - w / 2, w);
+        });
+        pal.appendChild(thumb);
+        const w = 200;
+        addSticker(img, layout.width / 2 - w / 2, layout.height / 2 - w / 2, w);
+      }
+      upInp.value = "";
+    });
+    fsSticker.appendChild(upInp);
+
+    // 马赛克画笔工具
+    const mosaicBar = document.createElement("div");
+    mosaicBar.className = "mosaic-bar";
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.className = "mosaic-btn";
+    toggleBtn.textContent = "马赛克画笔";
+    toggleBtn.addEventListener("click", () => toggleMosaicMode(toggleBtn));
+    mosaicBar.appendChild(toggleBtn);
+
+    const brushGroup = document.createElement("div");
+    brushGroup.className = "brush-group";
+    const LABELS = ["小", "中", "大"];
+    [40, 80, 120].forEach((size, idx) => {
+      const btn = document.createElement("button");
+      btn.className = "brush-btn" + (size === 80 ? " active" : "");
+      btn.dataset.brush = size;
+      btn.title = LABELS[idx];
+      btn.addEventListener("click", () => setBrushSize(size));
+      brushGroup.appendChild(btn);
+    });
+    mosaicBar.appendChild(brushGroup);
+
+    const undoBtn = document.createElement("button");
+    undoBtn.className = "mosaic-btn";
+    undoBtn.textContent = "撤销上一笔";
+    undoBtn.addEventListener("click", () => undoMosaicStroke());
+    mosaicBar.appendChild(undoBtn);
+
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "mosaic-btn";
+    clearBtn.textContent = "清除全部";
+    clearBtn.addEventListener("click", () => clearMosaic());
+    mosaicBar.appendChild(clearBtn);
+
+    fsSticker.appendChild(mosaicBar);
+
+    const mosaicHint = document.createElement("p");
+    mosaicHint.className = "mosaic-hint";
+    mosaicHint.textContent = "提示：开启画笔后预览区变为十字光标，涂抹区域以半透明白色显示；导出时才是真正马赛克效果。画错可用「撤销」或「清除」。";
+    fsSticker.appendChild(mosaicHint);
+  }
 }
+
 
 function setValueSilent(id, v) {
   state.values[id] = v;
@@ -911,13 +1024,30 @@ async function init() {
     overlayInner = document.getElementById("overlayInner");
     overlayInner.style.width = layout.width + "px";
     overlayInner.style.height = layout.height + "px";
+
+    // 马赛克蒙版初始化
+    state.mosaic.maskCanvas = document.createElement("canvas");
+    state.mosaic.maskCanvas.width = layout.width;
+    state.mosaic.maskCanvas.height = layout.height;
+    state.mosaic.maskCtx = state.mosaic.maskCanvas.getContext("2d");
+    const mosaicPreview = document.createElement("img");
+    mosaicPreview.id = "mosaicPreview";
+    mosaicPreview.style.display = "none";
+    overlayInner.appendChild(mosaicPreview);
+
     updateScale();
     window.addEventListener("resize", updateScale);
 
-    // 点击空白处取消选中
+    // 点击空白处取消选中（马赛克模式下进入绘制）
     overlayInner.addEventListener("pointerdown", (e) => {
+      if (state.mosaic.enabled) {
+        onMosaicPointerDown(e);
+        return;
+      }
       if (e.target === overlayInner) selectEl(null);
     });
+
+    buildForm();
 
     buildForm();
     MODULE_RECTS.forEach((_, mi) => renderModulePlaceholder(mi));
@@ -943,17 +1073,108 @@ async function init() {
       state.modules.forEach((mod, mi) => {
         mod.photos.slice().forEach((p) => p.el.querySelector(".del").click());
       });
-      state.dealPhoto = null;
-      renderDealPhoto();
-      redraw();
-    });
+state.dealPhoto = null; renderDealPhoto(); clearMosaic(); if (state.mosaic.enabled) { const btn = document.querySelector(`.mosaic-btn.active`); if (btn) btn.classList.remove(`active`); state.mosaic.enabled = false; overlayInner.classList.remove(`mosaic-mode`); } redraw(); });
     status.textContent = "";
     // 测试钩子
-    window.__poster = { state, composePoster, redraw, layoutModule };
+    window.__poster = { state, composePoster, redraw, layoutModule, redrawMosaicMask, updateMosaicPreview };
   } catch (e) {
     status.textContent = "加载失败:" + e.message;
     console.error(e);
   }
+}
+
+/* ================= 马赛克画笔 ================= */
+function toggleMosaicMode(btn) {
+  state.mosaic.enabled = !state.mosaic.enabled;
+  if (btn) btn.classList.toggle("active", state.mosaic.enabled);
+  overlayInner.classList.toggle("mosaic-mode", state.mosaic.enabled);
+}
+
+function setBrushSize(size) {
+  state.mosaic.brushSize = size;
+  document.querySelectorAll(".brush-btn").forEach((b) => {
+    b.classList.toggle("active", parseInt(b.dataset.brush) === size);
+  });
+}
+
+function undoMosaicStroke() {
+  if (!state.mosaic.strokes.length) return;
+  state.mosaic.strokes.pop();
+  redrawMosaicMask();
+}
+
+function clearMosaic() {
+  state.mosaic.strokes = [];
+  redrawMosaicMask();
+}
+
+function redrawMosaicMask() {
+  const ctx = state.mosaic.maskCtx;
+  if (!ctx) return;
+  ctx.clearRect(0, 0, layout.width, layout.height);
+  ctx.fillStyle = "#fff";
+  ctx.strokeStyle = "#fff";
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const stroke of state.mosaic.strokes) {
+    if (stroke.points.length < 2) continue;
+    ctx.lineWidth = stroke.size;
+    ctx.beginPath();
+    ctx.moveTo(stroke.points[0][0], stroke.points[0][1]);
+    for (let i = 1; i < stroke.points.length; i++) {
+      ctx.lineTo(stroke.points[i][0], stroke.points[i][1]);
+    }
+    ctx.stroke();
+  }
+  updateMosaicPreview();
+}
+
+function updateMosaicPreview() {
+  const preview = document.getElementById("mosaicPreview");
+  if (!preview) return;
+  if (!state.mosaic.strokes.length) {
+    preview.style.display = "none";
+  } else {
+    preview.style.display = "";
+    preview.src = state.mosaic.maskCanvas.toDataURL();
+  }
+}
+
+function onMosaicPointerDown(e) {
+  if (!state.mosaic.enabled) return;
+  e.preventDefault();
+  overlayInner.setPointerCapture(e.pointerId);
+
+  const rect = overlayInner.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / scaleFactor;
+  const y = (e.clientY - rect.top) / scaleFactor;
+  const stroke = { points: [[x, y]], size: state.mosaic.brushSize };
+  state.mosaic.strokes.push(stroke);
+
+  const move = (ev) => {
+    const mx = (ev.clientX - rect.left) / scaleFactor;
+    const my = (ev.clientY - rect.top) / scaleFactor;
+    stroke.points.push([mx, my]);
+    const ctx = state.mosaic.maskCtx;
+    ctx.fillStyle = "#fff";
+    ctx.strokeStyle = "#fff";
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = stroke.size;
+    ctx.beginPath();
+    const pts = stroke.points;
+    ctx.moveTo(pts[pts.length - 2][0], pts[pts.length - 2][1]);
+    ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+    ctx.stroke();
+    updateMosaicPreview();
+  };
+
+  const up = () => {
+    overlayInner.removeEventListener("pointermove", move);
+    overlayInner.removeEventListener("pointerup", up);
+  };
+  overlayInner.addEventListener("pointermove", move);
+  overlayInner.addEventListener("pointerup", up);
 }
 
 window.addEventListener("DOMContentLoaded", init);
