@@ -1048,8 +1048,6 @@ async function init() {
     });
 
     buildForm();
-
-    buildForm();
     MODULE_RECTS.forEach((_, mi) => renderModulePlaceholder(mi));
     redraw();
 
