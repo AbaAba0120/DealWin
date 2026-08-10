@@ -304,6 +304,22 @@
     opacity: 0.35;
   }
   #status { color: #c0392b; padding: 4px 0; font-size: 13px; }
+  /* 字段滑条 */
+  .slider-field input[type="range"] {
+    flex: 1;
+    min-width: 0;
+    height: 20px;
+    accent-color: #c70203;
+    cursor: pointer;
+  }
+  .slider-val {
+    min-width: 52px;
+    text-align: right;
+    font-style: normal;
+    font-size: 12px;
+    color: #c70203;
+    font-weight: 600;
+  }
   /* 拖拽上传高亮 */
   fieldset.drop-hover { outline: 3px dashed #c70203; outline-offset: 2px; }
   /* 粘贴激活条 */

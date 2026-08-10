@@ -649,6 +649,36 @@ function buildForm() {
     return em;
   };
 
+  /* 在输入框所在行下方加滑动条,与输入值双向同步 */
+  const addSliderRow = (inp, { min, max, apply, read, fmt }) => {
+    const anchor = inp.closest(".field");
+    const row = document.createElement("div");
+    row.className = "field slider-field";
+    row.appendChild(document.createElement("span")); // 占位,与上方输入框对齐
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = min;
+    slider.max = max;
+    const lab = document.createElement("em");
+    lab.className = "slider-val";
+    row.appendChild(slider);
+    row.appendChild(lab);
+    anchor.insertAdjacentElement("afterend", row);
+    const sync = () => {
+      const pos = read();
+      if (pos === null || pos === undefined || isNaN(pos)) return;
+      slider.value = Math.min(Math.max(pos, min), max);
+      lab.textContent = fmt(pos);
+    };
+    slider.addEventListener("input", () => {
+      const pos = parseFloat(slider.value);
+      apply(pos);
+      lab.textContent = fmt(pos);
+    });
+    sync();
+    return { row, slider, sync };
+  };
+
   /* 单值输入(整句或前缀+值) */
   const addTextField = (fs, id, label, prefix, defaultVal) => {
     const row = makeRow(fs, label);
@@ -766,12 +796,14 @@ function buildForm() {
   updateDerived();
 
   // 客户出价:默认成交价的 92%,可在 85%-97% 之间修改,超出自动夹取
+  let syncBidSlider = () => {};
   const autoFillBid = () => {
     const price = parseFloat(priceInp.value);
     if (isNaN(price)) return;
     bidInp.value = String(Math.round(price * 0.92));
     setValue(DEAL_IDS.bid, bidInp.value);
     updateDerived();
+    syncBidSlider();
   };
   priceInp.addEventListener("input", autoFillBid);
   bidInp.addEventListener("change", () => {
@@ -785,8 +817,29 @@ function buildForm() {
       updateDerived();
       bidInp.style.borderColor = "#e53935";
       setTimeout(() => (bidInp.style.borderColor = ""), 1200);
+      syncBidSlider();
     }
   });
+  // 出价比例滑条(85%-97%)
+  const pctFmt = (p) => `${Math.round(p * 10) / 10}%`;
+  const bidSlider = addSliderRow(bidInp, {
+    min: 85,
+    max: 97,
+    apply: (pct) => {
+      const price = parseFloat(priceInp.value);
+      if (isNaN(price)) return;
+      bidInp.value = String(Math.round((price * pct) / 100));
+      bidInp.dispatchEvent(new Event("input"));
+    },
+    read: () => {
+      const price = parseFloat(priceInp.value);
+      const bid = parseFloat(bidInp.value);
+      return !isNaN(price) && !isNaN(bid) && price > 0 ? (bid / price) * 100 : null;
+    },
+    fmt: pctFmt,
+  });
+  bidInp.addEventListener("input", bidSlider.sync);
+  syncBidSlider = bidSlider.sync;
   autoFillBid();
   bidInp.dataset.default = bidInp.value; // 恢复默认时回到 92% 而非 PSD 里的旧值
 
@@ -797,6 +850,8 @@ function buildForm() {
 
   let wtAfterAgents = null, wtAfterExposure = null, wtAfterShopInp = null;
   let wtView = null, wtBid = null, wtNego = null; // 委托-后:带看量/出价量/谈判量(随机+可修改)
+  let wtShootInp = null; // 委托-后:拍摄人数输入框
+  let syncWtSliders = () => {}; // 重随机后同步各滑条
   const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 
   /* --- 分区按模板生成(行数与 PSD 图层一一对应,对不上则退化为整值输入) --- */
@@ -909,6 +964,7 @@ function buildForm() {
     updateWtBid(); // 出价量跟随带看量
     // 谈判量:1-10 随机
     if (wtNego) setTplValue(wtNego, "（次）", randInt(1, 10));
+    syncWtSliders();
   };
 
   ["组 7 拷贝 3", "组 7 拷贝 4"].forEach((g, gi) => {
@@ -942,7 +998,8 @@ function buildForm() {
         wtAfterExposure = { inp, id: t.id };
       } else if (gi === 1 && i === 3) {
         // 拍摄人数:15-30 随机,可修改
-        addTemplateField(fs, t.id, label, "", tpl, [String(randInt(15, 30))]);
+        const inputs = addTemplateField(fs, t.id, label, "", tpl, [String(randInt(15, 30))]);
+        wtShootInp = inputs[0];
       } else if (gi === 1 && i === 5) {
         // 带看量:门店量 30%-120% 随机取整,可修改;变化时联动出价量
         const inputs = addTemplateField(fs, t.id, label, "", tpl, [defs[i]]);
@@ -966,6 +1023,76 @@ function buildForm() {
     });
     if (gi === 1) updateWtAfterDerived();
   });
+
+  /* --- 委托-后:比例/范围滑条 --- */
+  if (wtShootInp && wtView && wtBid && wtNego) {
+    // 拍摄人数 15-30
+    const shootSlider = addSliderRow(wtShootInp, {
+      min: 15,
+      max: 30,
+      apply: (v) => {
+        wtShootInp.value = String(v);
+        wtShootInp.dispatchEvent(new Event("input"));
+      },
+      read: () => parseFloat(wtShootInp.value),
+      fmt: (v) => `${v}人`,
+    });
+    wtShootInp.addEventListener("input", shootSlider.sync);
+    // 带看量 = 门店量的 30%-120%
+    const viewSlider = addSliderRow(wtView.inp, {
+      min: 30,
+      max: 120,
+      apply: (pct) => {
+        const shop = parseFloat(wtAfterShopInp?.value) || 0;
+        wtView.inp.value = String(Math.round((shop * pct) / 100));
+        wtView.inp.dispatchEvent(new Event("input"));
+      },
+      read: () => {
+        const shop = parseFloat(wtAfterShopInp?.value) || 0;
+        const v = parseFloat(wtView.inp.value);
+        return shop > 0 && !isNaN(v) ? (v / shop) * 100 : null;
+      },
+      fmt: pctFmt,
+    });
+    wtView.inp.addEventListener("input", viewSlider.sync);
+    // 出价量 = 带看量的 5%-15%
+    const bidRatioSlider = addSliderRow(wtBid.inp, {
+      min: 5,
+      max: 15,
+      apply: (pct) => {
+        const view = parseFloat(wtView.inp.value) || 0;
+        wtBid.inp.value = String(Math.round((view * pct) / 100));
+        wtBid.inp.dispatchEvent(new Event("input"));
+      },
+      read: () => {
+        const view = parseFloat(wtView.inp.value) || 0;
+        const v = parseFloat(wtBid.inp.value);
+        return view > 0 && !isNaN(v) ? (v / view) * 100 : null;
+      },
+      fmt: pctFmt,
+    });
+    wtBid.inp.addEventListener("input", bidRatioSlider.sync);
+    // 谈判量 1-10
+    const negoSlider = addSliderRow(wtNego.inp, {
+      min: 1,
+      max: 10,
+      apply: (v) => {
+        wtNego.inp.value = String(v);
+        wtNego.inp.dispatchEvent(new Event("input"));
+      },
+      read: () => parseFloat(wtNego.inp.value),
+      fmt: (v) => `${v}次`,
+    });
+    wtNego.inp.addEventListener("input", negoSlider.sync);
+
+    syncWtSliders = () => {
+      shootSlider.sync();
+      viewSlider.sync();
+      bidRatioSlider.sync();
+      negoSlider.sync();
+    };
+    syncWtSliders();
+  }
 
   /* --- 成交照片 --- */
   const fsDeal = newSection("成交照片(右上大图)");
