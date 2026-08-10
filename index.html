@@ -304,16 +304,21 @@
     opacity: 0.35;
   }
   #status { color: #c0392b; padding: 4px 0; font-size: 13px; }
-    content: "";
-    position: absolute;
-    right: 18px;
-    bottom: 18px;
-    width: 40px;
-    height: 40px;
-    border-right: 10px solid #fff;
-    border-bottom: 10px solid #fff;
+  /* 拖拽上传高亮 */
+  fieldset.drop-hover { outline: 3px dashed #c70203; outline-offset: 2px; }
+  /* 粘贴激活条 */
+  .paste-zone {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px dashed #bbb;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #999;
+    cursor: pointer;
+    text-align: center;
+    user-select: none;
   }
-  #status { color: #c0392b; padding: 4px 0; font-size: 13px; }
+  .paste-zone.active { border-color: #c70203; color: #c70203; background: #fff5f5; }
   @media (max-width: 1100px) {
     body { height: auto; overflow: visible; }
     main { flex-direction: column; }

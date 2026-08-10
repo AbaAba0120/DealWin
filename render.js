@@ -34,6 +34,7 @@ const MODULE_RECTS = [
 ];
 const MODULE_NAMES = ["线下门店推广", "线上推广拍摄", "空看OPEN HOUSE", "客户带看"];
 const TILE_GAP = 8; // 模块内多图间隙(画布像素)
+const MAX_MODULE_PHOTOS = 12; // 每个项目照片模块最多显示的照片数
 
 // 预设网格:行配置,数字为该行的格子数
 const GRID_PRESETS = {
@@ -44,6 +45,8 @@ const GRID_PRESETS = {
   "1+2": [1, 2],
   "2x2": [2, 2],
   "3x2": [3, 3],
+  "3x3": [3, 3, 3],
+  "4x4": [4, 4, 4],
 };
 const PRESET_LABELS = {
   auto: "自动",
@@ -53,6 +56,8 @@ const PRESET_LABELS = {
   "1+2": "上一下二",
   "2x2": "田字四格",
   "3x2": "六宫格",
+  "3x3": "九宫格",
+  "4x4": "十二宫格",
 };
 
 function autoPattern(n) {
@@ -60,7 +65,13 @@ function autoPattern(n) {
   if (n === 2) return [2];
   if (n === 3) return [1, 2];
   if (n === 4) return [2, 2];
-  return [3, 3];
+  if (n <= 6) return [3, 3];
+  if (n === 7) return [3, 2, 2];
+  if (n === 8) return [3, 3, 2];
+  if (n === 9) return [3, 3, 3];
+  if (n === 10) return [4, 3, 3];
+  if (n === 11) return [4, 4, 3];
+  return [4, 4, 4];
 }
 
 /* 按行配置把模块矩形切成格子 */
@@ -108,6 +119,7 @@ function splitPrefix(text) {
 }
 
 /* ================= 全局状态 ================= */
+const NO_SHRINK_IDS = new Set(); // 禁用自动缩字号的文字图层 id
 const state = {
   values: {},        // 文字图层 id -> 最终绘制文本
   dealPhoto: null,   // ImageBitmap
@@ -177,7 +189,7 @@ function drawTexts(ctx) {
     ctx.font = `${size}px "${family}"`;
     const maxW = (t.bbox[2] - t.bbox[0]) * 1.06;
     const w = ctx.measureText(value).width;
-    if (w > maxW && w > 0) {
+    if (!NO_SHRINK_IDS.has(t.id) && w > maxW && w > 0) {
       size = (size * maxW) / w;
       ctx.font = `${size}px "${family}"`;
     }
@@ -429,6 +441,66 @@ async function addSticker(img, x, y, w) {
   positionEl(el, s);
   overlayInner.appendChild(el);
   selectEl(el);
+}
+
+/* ---------- 图片上传(文件选择/粘贴/拖拽共用) ---------- */
+let statusTimer = null;
+function showStatus(msg) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => (el.textContent = ""), 4000);
+}
+
+async function setDealPhotoFile(file) {
+  state.dealPhoto = await createImageBitmap(file);
+  state.dealPhotoUrl = URL.createObjectURL(file);
+  renderDealPhoto();
+}
+
+async function addModulePhotoFile(mi, file) {
+  if (state.modules[mi].photos.length >= MAX_MODULE_PHOTOS) {
+    showStatus(`「${MODULE_NAMES[mi]}」最多 ${MAX_MODULE_PHOTOS} 张照片,多余图片已忽略`);
+    return;
+  }
+  const bmp = await createImageBitmap(file);
+  addModulePhoto(mi, bmp, URL.createObjectURL(file));
+}
+
+/* 从拖拽/粘贴事件里取图片文件 */
+function pickImageFiles(fileList) {
+  const files = [...(fileList || [])].filter((f) => f.type.startsWith("image/"));
+  if (!files.length) showStatus("未识别到图片文件");
+  return files;
+}
+
+/* 让某个元素成为拖拽落点 */
+function makeDropTarget(el, onFiles) {
+  el.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    el.classList.add("drop-hover");
+  });
+  el.addEventListener("dragleave", () => el.classList.remove("drop-hover"));
+  el.addEventListener("drop", (e) => {
+    e.preventDefault();
+    el.classList.remove("drop-hover");
+    const files = pickImageFiles(e.dataTransfer?.files);
+    if (files.length) onFiles(files);
+  });
+}
+
+/* 粘贴目标:点击分区里的激活条后,Ctrl+V 的图片进入该分区 */
+let pasteTarget = null;
+function makePasteZone(fs, onFiles) {
+  const zone = document.createElement("div");
+  zone.className = "paste-zone";
+  zone.textContent = "点击激活后,可 Ctrl+V 粘贴图片;也可直接把图片拖到这个分区";
+  zone.addEventListener("click", () => {
+    document.querySelectorAll(".paste-zone.active").forEach((z) => z.classList.remove("active"));
+    zone.classList.add("active");
+    pasteTarget = onFiles;
+  });
+  fs.appendChild(zone);
 }
 
 /* ---------- 成交照片 ---------- */
@@ -693,12 +765,39 @@ function buildForm() {
   bidInp.addEventListener("input", updateDerived);
   updateDerived();
 
+  // 客户出价:默认成交价的 92%,可在 85%-97% 之间修改,超出自动夹取
+  const autoFillBid = () => {
+    const price = parseFloat(priceInp.value);
+    if (isNaN(price)) return;
+    bidInp.value = String(Math.round(price * 0.92));
+    setValue(DEAL_IDS.bid, bidInp.value);
+    updateDerived();
+  };
+  priceInp.addEventListener("input", autoFillBid);
+  bidInp.addEventListener("change", () => {
+    const price = parseFloat(priceInp.value);
+    const bid = parseFloat(bidInp.value);
+    if (isNaN(price) || isNaN(bid)) return;
+    const clamped = Math.min(Math.max(bid, Math.round(price * 0.85)), Math.round(price * 0.97));
+    if (clamped !== bid) {
+      bidInp.value = String(clamped);
+      setValue(DEAL_IDS.bid, bidInp.value);
+      updateDerived();
+      bidInp.style.borderColor = "#e53935";
+      setTimeout(() => (bidInp.style.borderColor = ""), 1200);
+    }
+  });
+  autoFillBid();
+  bidInp.dataset.default = bidInp.value; // 恢复默认时回到 92% 而非 PSD 里的旧值
+
   {
     const [prefix, val] = splitPrefix(byId[DEAL_IDS.rating].text);
     addTextField(fs1, DEAL_IDS.rating, "小区评级", prefix, val);
   }
 
   let wtAfterAgents = null, wtAfterExposure = null, wtAfterShopInp = null;
+  let wtView = null, wtBid = null, wtNego = null; // 委托-后:带看量/出价量/谈判量(随机+可修改)
+  const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 
   /* --- 分区按模板生成(行数与 PSD 图层一一对应,对不上则退化为整值输入) --- */
   const groupTexts = (g) =>
@@ -732,6 +831,7 @@ function buildForm() {
         addTemplateField(fs, t.id, prefix, prefix, spec.tpl, spec.def);
       } else {
         // 装修行:是否有折价
+        NO_SHRINK_IDS.add(t.id); // 选"是"后文本变长,仍保持与其他行一致的字号
         const row = makeRow(fs, "装修");
         const sel = document.createElement("select");
         ["否", "是"].forEach((op) => {
@@ -777,6 +877,17 @@ function buildForm() {
   }
 
   /* --- 委托前/后 --- */
+  const setTplValue = (rec, suffix, val) => {
+    rec.inp.value = val;
+    setValue(rec.id, val + suffix);
+  };
+  // 出价量 = 带看量 × 5%-15% 随机,取整
+  const updateWtBid = () => {
+    if (!wtView || !wtBid) return;
+    const view = parseFloat(wtView.inp.value) || 0;
+    const ratio = 0.05 + Math.random() * 0.1;
+    setTplValue(wtBid, "（组）", Math.round(view * ratio));
+  };
   const updateWtAfterDerived = () => {
     const shopCount = parseFloat(wtAfterShopInp?.value) || 0;
     if (wtAfterAgents) {
@@ -790,6 +901,14 @@ function buildForm() {
       wtAfterExposure.inp.value = val;
       setValue(wtAfterExposure.id, val + "万（人次）");
     }
+    // 带看量 = 门店量 × 30%-120% 随机,取整
+    if (wtView) {
+      const ratio = 0.3 + Math.random() * 0.9;
+      setTplValue(wtView, "（组）", Math.round(shopCount * ratio));
+    }
+    updateWtBid(); // 出价量跟随带看量
+    // 谈判量:1-10 随机
+    if (wtNego) setTplValue(wtNego, "（次）", randInt(1, 10));
   };
 
   ["组 7 拷贝 3", "组 7 拷贝 4"].forEach((g, gi) => {
@@ -821,6 +940,22 @@ function buildForm() {
         row.appendChild(inp);
         row.appendChild(makeEm("万（人次）"));
         wtAfterExposure = { inp, id: t.id };
+      } else if (gi === 1 && i === 3) {
+        // 拍摄人数:15-30 随机,可修改
+        addTemplateField(fs, t.id, label, "", tpl, [String(randInt(15, 30))]);
+      } else if (gi === 1 && i === 5) {
+        // 带看量:门店量 30%-120% 随机取整,可修改;变化时联动出价量
+        const inputs = addTemplateField(fs, t.id, label, "", tpl, [defs[i]]);
+        wtView = { inp: inputs[0], id: t.id };
+        wtView.inp.addEventListener("input", updateWtBid);
+      } else if (gi === 1 && i === 6) {
+        // 出价量:带看量 5%-15% 随机取整,可修改
+        const inputs = addTemplateField(fs, t.id, label, "", tpl, [defs[i]]);
+        wtBid = { inp: inputs[0], id: t.id };
+      } else if (gi === 1 && i === 7) {
+        // 谈判量:1-10 随机,可修改
+        const inputs = addTemplateField(fs, t.id, label, "", tpl, [defs[i]]);
+        wtNego = { inp: inputs[0], id: t.id };
       } else if (tpl === null) {
         addSelectField(fs, t.id, label, "", ["否", "是"], defs[i]);
       } else if (tpl) {
@@ -835,33 +970,32 @@ function buildForm() {
   /* --- 成交照片 --- */
   const fsDeal = newSection("成交照片(右上大图)");
   {
+    const onFiles = (files) => setDealPhotoFile(files[0]);
     const inp = document.createElement("input");
     inp.type = "file";
     inp.accept = "image/*";
     inp.addEventListener("change", async () => {
-      if (!inp.files[0]) return;
-      state.dealPhoto = await createImageBitmap(inp.files[0]);
-      state.dealPhotoUrl = URL.createObjectURL(inp.files[0]);
-      renderDealPhoto();
+      if (inp.files[0]) await setDealPhotoFile(inp.files[0]);
+      inp.value = "";
     });
     fsDeal.appendChild(inp);
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = "上传后照片自动填入海报右上区域。";
     fsDeal.appendChild(hint);
+    makeDropTarget(fsDeal, onFiles);
+    makePasteZone(fsDeal, onFiles);
   }
   /* --- 项目照片模块 --- */
   MODULE_NAMES.forEach((name, mi) => {
     const fs = newSection(`项目照片 · ${name}`);
+    const onFiles = (files) => files.forEach((f) => addModulePhotoFile(mi, f));
     const inp = document.createElement("input");
     inp.type = "file";
     inp.accept = "image/*";
     inp.multiple = true;
     inp.addEventListener("change", async () => {
-      for (const f of inp.files) {
-        const bmp = await createImageBitmap(f);
-        addModulePhoto(mi, bmp, URL.createObjectURL(f));
-      }
+      for (const f of inp.files) await addModulePhotoFile(mi, f);
       inp.value = "";
     });
     fs.appendChild(inp);
@@ -886,7 +1020,19 @@ function buildForm() {
     fs.appendChild(row);
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "可一次选多张;照片格可直接拖动位置、右下角缩放微调。";
+    hint.textContent = `最多 ${MAX_MODULE_PHOTOS} 张;照片格可直接拖动位置、右下角缩放微调。`;
+    fs.appendChild(hint);
+    makeDropTarget(fs, onFiles);
+    makePasteZone(fs, onFiles);
+  });
+
+  // Ctrl+V 粘贴:图片进入当前激活的分区
+  document.addEventListener("paste", (e) => {
+    if (!pasteTarget) return;
+    const files = pickImageFiles(e.clipboardData?.files);
+    if (!files.length) return;
+    e.preventDefault();
+    pasteTarget(files);
   });
 
   /* --- 贴纸·马赛克（所有照片通用） --- */
@@ -1046,6 +1192,26 @@ async function init() {
       }
       if (e.target === overlayInner) selectEl(null);
     });
+
+    // 预览区拖拽上传:按落点坐标路由到成交照片或对应项目照片模块
+    overlayInner.addEventListener("dragover", (e) => e.preventDefault());
+    overlayInner.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const files = pickImageFiles(e.dataTransfer?.files);
+      if (!files.length) return;
+      const rect = overlayInner.getBoundingClientRect();
+      const cx = (e.clientX - rect.left) / scaleFactor;
+      const cy = (e.clientY - rect.top) / scaleFactor;
+      const inRect = (r) => cx >= r[0] && cx <= r[2] && cy >= r[1] && cy <= r[3];
+      if (inRect(DEAL_RECT)) {
+        setDealPhotoFile(files[0]);
+        return;
+      }
+      const mi = MODULE_RECTS.findIndex(inRect);
+      if (mi >= 0) files.forEach((f) => addModulePhotoFile(mi, f));
+      else showStatus("请把图片拖到照片区域内");
+    });
+
 
     buildForm();
     MODULE_RECTS.forEach((_, mi) => renderModulePlaceholder(mi));
