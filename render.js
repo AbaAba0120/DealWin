@@ -936,20 +936,18 @@ function buildForm() {
     rec.inp.value = val;
     setValue(rec.id, val + suffix);
   };
-  // 出价量 = 带看量 × 5%-15% 随机,取整
-  const updateWtBid = () => {
-    if (!wtView || !wtBid) return;
-    const view = parseFloat(wtView.inp.value) || 0;
-    const ratio = 0.05 + Math.random() * 0.1;
-    setTplValue(wtBid, "（组）", Math.round(view * ratio));
+  let wtAgentsDigit = 0; // 影响经纪人数量 = 门店量×5 + 随机个位数(滑块可调)
+  const updateWtAgents = () => {
+    if (!wtAfterAgents) return;
+    const shopCount = parseFloat(wtAfterShopInp?.value) || 0;
+    const val = Math.round(shopCount * 5) + wtAgentsDigit;
+    wtAfterAgents.inp.value = val;
+    setValue(wtAfterAgents.id, val + "（人）");
   };
   const updateWtAfterDerived = () => {
     const shopCount = parseFloat(wtAfterShopInp?.value) || 0;
-    if (wtAfterAgents) {
-      const val = Math.round(shopCount * 5);
-      wtAfterAgents.inp.value = val;
-      setValue(wtAfterAgents.id, val + "（人）");
-    }
+    wtAgentsDigit = randInt(0, 9);
+    updateWtAgents();
     if (wtAfterExposure) {
       let val = (shopCount * 0.3).toFixed(2);
       val = val.replace(/\.?0+$/, "");
@@ -961,7 +959,8 @@ function buildForm() {
       const ratio = 0.3 + Math.random() * 0.9;
       setTplValue(wtView, "（组）", Math.round(shopCount * ratio));
     }
-    updateWtBid(); // 出价量跟随带看量
+    // 出价量:0-5 随机
+    if (wtBid) setTplValue(wtBid, "（组）", randInt(0, 5));
     // 谈判量:1-10 随机
     if (wtNego) setTplValue(wtNego, "（次）", randInt(1, 10));
     syncWtSliders();
@@ -1001,12 +1000,11 @@ function buildForm() {
         const inputs = addTemplateField(fs, t.id, label, "", tpl, [String(randInt(15, 30))]);
         wtShootInp = inputs[0];
       } else if (gi === 1 && i === 5) {
-        // 带看量:门店量 30%-120% 随机取整,可修改;变化时联动出价量
+        // 带看量:门店量 30%-120% 随机取整,可修改
         const inputs = addTemplateField(fs, t.id, label, "", tpl, [defs[i]]);
         wtView = { inp: inputs[0], id: t.id };
-        wtView.inp.addEventListener("input", updateWtBid);
       } else if (gi === 1 && i === 6) {
-        // 出价量:带看量 5%-15% 随机取整,可修改
+        // 出价量:0-5 随机,可修改
         const inputs = addTemplateField(fs, t.id, label, "", tpl, [defs[i]]);
         wtBid = { inp: inputs[0], id: t.id };
       } else if (gi === 1 && i === 7) {
@@ -1025,7 +1023,18 @@ function buildForm() {
   });
 
   /* --- 委托-后:比例/范围滑条 --- */
-  if (wtShootInp && wtView && wtBid && wtNego) {
+  if (wtShootInp && wtView && wtBid && wtNego && wtAfterAgents) {
+    // 影响经纪人数量:门店量×5 + 个位数(0-9)
+    const agentsSlider = addSliderRow(wtAfterAgents.inp, {
+      min: 0,
+      max: 9,
+      apply: (v) => {
+        wtAgentsDigit = v;
+        updateWtAgents();
+      },
+      read: () => wtAgentsDigit,
+      fmt: (v) => `+${v}人`,
+    });
     // 拍摄人数 15-30
     const shootSlider = addSliderRow(wtShootInp, {
       min: 15,
@@ -1055,23 +1064,18 @@ function buildForm() {
       fmt: pctFmt,
     });
     wtView.inp.addEventListener("input", viewSlider.sync);
-    // 出价量 = 带看量的 5%-15%
-    const bidRatioSlider = addSliderRow(wtBid.inp, {
-      min: 5,
-      max: 15,
-      apply: (pct) => {
-        const view = parseFloat(wtView.inp.value) || 0;
-        wtBid.inp.value = String(Math.round((view * pct) / 100));
+    // 出价量 0-5
+    const bidSlider2 = addSliderRow(wtBid.inp, {
+      min: 0,
+      max: 5,
+      apply: (v) => {
+        wtBid.inp.value = String(v);
         wtBid.inp.dispatchEvent(new Event("input"));
       },
-      read: () => {
-        const view = parseFloat(wtView.inp.value) || 0;
-        const v = parseFloat(wtBid.inp.value);
-        return view > 0 && !isNaN(v) ? (v / view) * 100 : null;
-      },
-      fmt: pctFmt,
+      read: () => parseFloat(wtBid.inp.value),
+      fmt: (v) => `${v}组`,
     });
-    wtBid.inp.addEventListener("input", bidRatioSlider.sync);
+    wtBid.inp.addEventListener("input", bidSlider2.sync);
     // 谈判量 1-10
     const negoSlider = addSliderRow(wtNego.inp, {
       min: 1,
@@ -1086,9 +1090,10 @@ function buildForm() {
     wtNego.inp.addEventListener("input", negoSlider.sync);
 
     syncWtSliders = () => {
+      agentsSlider.sync();
       shootSlider.sync();
       viewSlider.sync();
-      bidRatioSlider.sync();
+      bidSlider2.sync();
       negoSlider.sync();
     };
     syncWtSliders();
