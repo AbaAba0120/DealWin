@@ -585,10 +585,10 @@ const XQ_ROWS = [ // 小区信息,按行顺序
   { tpl: "{}（套）", def: ["6"] },
   { tpl: "{} 元/平米", def: ["60643"] },
 ];
-const FW_ROWS = [ // 房屋信息;null 表示装修行(折价联动,单独处理)
+const FW_ROWS = [ // 房屋信息;"floor" 表示楼层行(高中低下拉),null 表示装修行(折价联动),均单独处理
   { tpl: "{}平米", def: ["159"] },
   { tpl: "{}", def: ["3室2厅1厨2卫，2阳台；"] },
-  { tpl: "{}/{}", def: ["19", "24"] },
+  "floor",
   { tpl: "{}", def: ["南"] },
   null,
   { tpl: "{}", def: ["无"] },
@@ -882,7 +882,23 @@ function buildForm() {
     texts.forEach((t, i) => {
       const [prefix, val] = splitPrefix(t.text) || ["", t.text];
       const spec = FW_ROWS[i];
-      if (spec) {
+      if (spec === "floor") {
+        // 楼层行:高/中/低 下拉,输出"楼层：X楼层"
+        const row = makeRow(fs, "楼层");
+        const sel = document.createElement("select");
+        ["高", "中", "低"].forEach((op) => {
+          const o = document.createElement("option");
+          o.value = o.textContent = op;
+          sel.appendChild(o);
+        });
+        sel.value = "高";
+        sel.dataset.default = "高";
+        sel.dataset.id = t.id;
+        sel.addEventListener("change", () => setValue(t.id, `楼层：${sel.value}楼层`));
+        row.appendChild(sel);
+        row.appendChild(makeEm("楼层"));
+        setValueSilent(t.id, "楼层：高楼层");
+      } else if (spec) {
         addTemplateField(fs, t.id, prefix, prefix, spec.tpl, spec.def);
       } else {
         // 装修行:是否有折价
