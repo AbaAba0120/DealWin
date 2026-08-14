@@ -909,6 +909,7 @@ function buildForm() {
     const texts = groupTexts("组 7 拷贝");
     texts.forEach((t, i) => {
       const [prefix, val] = splitPrefix(t.text) || ["", t.text];
+      if (prefix.includes("朝向")) NO_SHRINK_IDS.add(t.id); // 朝向内容变长也不缩字号
       const spec = FW_ROWS[i];
       if (spec === "floor") {
         // 楼层行:高/中/低 下拉,输出"楼层：X楼层"
