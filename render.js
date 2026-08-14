@@ -733,6 +733,7 @@ function buildForm() {
 
   /* --- 成交信息 --- */
   const fs1 = newSection("成交信息");
+  NO_SHRINK_IDS.add(DEAL_IDS.period); // 成交周期三位数时也保持原字号
   addTextField(fs1, DEAL_IDS.address, "房屋地址", "", byId[DEAL_IDS.address].text);
 
   // 成交日期:年月日三个框
