@@ -110,6 +110,13 @@ const ROW_LABELS = [
   "曝光量", "带看量", "出价量", "谈判量", "是否成交",
 ];
 
+/* 行内统一字号:触发字段字符数超过阈值时,整行一起缩放(幅度由触发字段自身决定,整行跟随) */
+const UNIFORM_GROUPS = [
+  { trigger: DEAL_IDS.price, maxChars: 4, ids: [DEAL_IDS.price, DEAL_IDS.period] }, // 上行
+  { trigger: DEAL_IDS.bid, maxChars: 3, ids: [DEAL_IDS.bid, DEAL_IDS.premium, DEAL_IDS.premiumRate] }, // 下行
+];
+const GROUP_IDS = new Set(UNIFORM_GROUPS.flatMap((g) => g.ids));
+
 /* 把「标签：值」拆成固定前缀和可编辑值 */
 function splitPrefix(text) {
   const candidates = [text.indexOf("："), text.indexOf(":")].filter((i) => i >= 0);
@@ -122,6 +129,7 @@ function splitPrefix(text) {
 const NO_SHRINK_IDS = new Set(); // 禁用自动缩字号的文字图层 id
 const state = {
   values: {},        // 文字图层 id -> 最终绘制文本
+  lastFontSizes: {}, // 文字图层 id -> 最近一次绘制字号(测试用)
   dealPhoto: null,   // ImageBitmap
   stickers: [],      // {img, x, y, w, h, angle, el}
   modules: MODULE_RECTS.map(() => ({ photos: [], preset: "auto" })),
@@ -170,6 +178,20 @@ function drawReflectedText(ctx, t, value, family) {
 }
 
 function drawTexts(ctx) {
+  // 行内统一字号:仅当触发字段字符数超阈值时,按触发字段所需字号整行缩放
+  const uniformSize = {};
+  for (const g of UNIFORM_GROUPS) {
+    const trig = layout.texts.find((x) => x.id === g.trigger);
+    if (!trig) continue;
+    const trigVal = state.values[g.trigger] !== undefined ? state.values[g.trigger] : trig.text;
+    if (!trigVal || trigVal.length <= g.maxChars) continue;
+    const family = FONT_FAMILIES[trig.font] || FONT_FAMILIES.medium;
+    ctx.font = `${trig.fontSize}px "${family}"`;
+    const w = ctx.measureText(trigVal).width;
+    const maxW = (trig.bbox[2] - trig.bbox[0]) * 1.06;
+    const s = w > maxW && w > 0 ? (trig.fontSize * maxW) / w : trig.fontSize;
+    for (const id of g.ids) uniformSize[id] = s;
+  }
   for (const t of layout.texts) {
     const value = state.values[t.id] !== undefined ? state.values[t.id] : t.text;
     if (!value) continue;
@@ -187,12 +209,18 @@ function drawTexts(ctx) {
     ctx.textAlign = t.align || "left";
     let size = t.fontSize;
     ctx.font = `${size}px "${family}"`;
-    const maxW = (t.bbox[2] - t.bbox[0]) * 1.06;
-    const w = ctx.measureText(value).width;
-    if (!NO_SHRINK_IDS.has(t.id) && w > maxW && w > 0) {
-      size = (size * maxW) / w;
+    if (uniformSize[t.id] !== undefined) {
+      size = uniformSize[t.id];
       ctx.font = `${size}px "${family}"`;
+    } else if (!GROUP_IDS.has(t.id)) {
+      const maxW = (t.bbox[2] - t.bbox[0]) * 1.06;
+      const w = ctx.measureText(value).width;
+      if (!NO_SHRINK_IDS.has(t.id) && w > maxW && w > 0) {
+        size = (size * maxW) / w;
+        ctx.font = `${size}px "${family}"`;
+      }
     }
+    state.lastFontSizes[t.id] = size;
     ctx.fillText(value, 0, 0);
     ctx.restore();
   }
@@ -733,7 +761,6 @@ function buildForm() {
 
   /* --- 成交信息 --- */
   const fs1 = newSection("成交信息");
-  NO_SHRINK_IDS.add(DEAL_IDS.period); // 成交周期三位数时也保持原字号
   addTextField(fs1, DEAL_IDS.address, "房屋地址", "", byId[DEAL_IDS.address].text);
 
   // 成交日期:年月日三个框
